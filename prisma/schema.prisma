@@ -1,0 +1,117 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// User model for authentication and authorization
+model User {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  email         String    @unique
+  name          String?
+  password      String    // Hashed password
+  role          UserRole  @default(USER)
+  articles      Article[] @relation("AuthoredArticles")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+enum UserRole {
+  ADMIN
+  EDITOR
+  USER
+}
+
+// Main article model
+model Article {
+  id              String           @id @default(auto()) @map("_id") @db.ObjectId
+  title           String
+  slug            String           @unique
+  content         String
+  summary         String?
+  imageUrl        String?
+  published       Boolean          @default(false)
+  featured        Boolean          @default(false)
+  viewCount       Int              @default(0)
+  author          User?            @relation("AuthoredArticles", fields: [authorId], references: [id])
+  authorId        String?          @db.ObjectId
+  category        Category?        @relation(fields: [categoryId], references: [id])
+  categoryId      String?          @db.ObjectId
+  tags            Tag[]            @relation(fields: [tagIds], references: [id])
+  tagIds          String[]         @db.ObjectId
+  translations    Translation[]
+  aiSummaries     AISummary[]
+  sourceUrl       String?          // For external articles
+  sourceProvider  String?          // Name of the news source
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+}
+
+// Categories for organizing articles
+model Category {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  name        String    @unique
+  slug        String    @unique
+  description String?
+  articles    Article[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// Tags for better article organization and search
+model Tag {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  name        String    @unique
+  slug        String    @unique
+  articles    Article[] @relation(fields: [articleIds], references: [id])
+  articleIds  String[]  @db.ObjectId
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// Translations of articles
+model Translation {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  language    String    // e.g., "he" for Hebrew
+  title       String
+  content     String
+  summary     String?
+  article     Article   @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  articleId   String    @db.ObjectId
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([articleId, language])
+}
+
+// AI-generated summaries
+model AISummary {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  content     String
+  language    String    // e.g., "he" for Hebrew
+  model       String    // The AI model used
+  article     Article   @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  articleId   String    @db.ObjectId
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([articleId, language])
+}
+
+// API Sources configuration
+model APISource {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  name        String    @unique // e.g., "TechCrunch"
+  apiKey      String?   // Encrypted API key
+  baseUrl     String
+  enabled     Boolean   @default(true)
+  lastFetch   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+} 
