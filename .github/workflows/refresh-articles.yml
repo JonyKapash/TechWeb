@@ -1,0 +1,17 @@
+name: Refresh Articles
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'  # Run every 12 hours
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Trigger article refresh
+      run: |
+        curl -X POST ${{ secrets.DEPLOYMENT_URL }}/api/cron/refresh \
+        -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+        -H "Content-Type: application/json" 

@@ -9,8 +9,10 @@ export class TranslationService {
       const translationPrompt = `
         You are a professional translator specializing in English to Hebrew translation.
         Please translate the following English article to Hebrew with high accuracy and natural flow.
-        Maintain all original content, formatting, and technical details.
-        Do not truncate or shorten the content.
+        IMPORTANT: Your response must contain ONLY the translated content in the specified format.
+        Do not include any notes, explanations, or metadata about the translation process.
+        Do not mention character counts or truncated content.
+        Do not add any additional information outside the translation itself.
         
         Title: ${article.title}
         Content: ${article.content}
@@ -21,43 +23,65 @@ export class TranslationService {
         SUMMARY:
         [A concise summary in Hebrew, max 150 characters]
         CONTENT:
-        [Complete Hebrew translation of the content, preserving all details and formatting]
+        [Complete Hebrew translation of the content]
       `;
 
       const translation = await generateStructuredContent<{
         title: string;
         summary: string;
         content: string;
-      }>(translationPrompt, (text) => {
-        const titleMatch = text.match(/TITLE:\s*([\s\S]*?)(?=SUMMARY:)/);
-        const summaryMatch = text.match(/SUMMARY:\s*([\s\S]*?)(?=CONTENT:)/);
-        const contentMatch = text.match(/CONTENT:\s*([\s\S]+)$/);
+      }>(
+        translationPrompt,
+        (text) => {
+          const titleMatch = text.match(/TITLE:\s*([\s\S]*?)(?=SUMMARY:)/);
+          const summaryMatch = text.match(/SUMMARY:\s*([\s\S]*?)(?=CONTENT:)/);
+          const contentMatch = text.match(/CONTENT:\s*([\s\S]+)$/);
 
-        if (!titleMatch?.[1] || !summaryMatch?.[1] || !contentMatch?.[1]) {
-          console.error("Failed to parse translation. Received text:", text);
-          throw new Error("Failed to parse translation");
-        }
+          if (!titleMatch?.[1] || !summaryMatch?.[1] || !contentMatch?.[1]) {
+            console.error("Failed to parse translation. Received text:", text);
+            throw new Error("Failed to parse translation");
+          }
 
-        const translatedTitle = titleMatch[1].trim();
-        const translatedSummary = summaryMatch[1].trim();
-        const translatedContent = contentMatch[1].trim();
+          const translatedTitle = titleMatch[1].trim();
+          const translatedSummary = summaryMatch[1].trim();
+          let translatedContent = contentMatch[1].trim();
 
-        if (!translatedTitle || !translatedSummary || !translatedContent) {
-          throw new Error("One or more translated fields are empty");
-        }
+          if (!translatedTitle || !translatedSummary || !translatedContent) {
+            throw new Error("One or more translated fields are empty");
+          }
 
-        // Ensure proper paragraph formatting
-        const formattedContent = translatedContent
-          .split(/\n+/)
-          .filter(para => para.trim())
-          .join('\n\n');
+          // Remove any metadata or note messages
+          translatedContent = translatedContent
+            .replace(/Note:.*?\[.*?chars\].*$/s, "") // Remove English note
+            .replace(/הערה:.*?\[.*?תווים\].*$/s, "") // Remove Hebrew note
+            .replace(/\[[\+\-]?\d+\s*(chars|תווים)\]/g, "") // Remove character count indicators
+            .trim();
 
-        return {
-          title: translatedTitle,
-          summary: translatedSummary,
-          content: formattedContent,
-        };
-      });
+          // Ensure proper paragraph formatting
+          const formattedContent = translatedContent
+            .split(/\n+/)
+            .filter((para) => para.trim())
+            .join("\n\n");
+
+          // Validate no metadata messages remain
+          if (
+            formattedContent.includes("[+") ||
+            formattedContent.includes("Note:") ||
+            formattedContent.includes("הערה:") ||
+            formattedContent.includes("chars]") ||
+            formattedContent.includes("תווים]")
+          ) {
+            throw new Error("Translation contains metadata messages");
+          }
+
+          return {
+            title: translatedTitle,
+            summary: translatedSummary,
+            content: formattedContent,
+          };
+        },
+        5
+      ); // Increased max retries to 5 for metadata issues
 
       // Store the complete translation and clear English content in a single transaction
       await prisma.$transaction([
@@ -94,6 +118,20 @@ export class TranslationService {
 
   static async processNextBatchOfArticles() {
     try {
+      // Check current count of articles with Hebrew translations
+      const translatedCount = await prisma.article.count({
+        where: {
+          translations: {
+            some: {
+              language: "he",
+            },
+          },
+        },
+      });
+
+      // Determine batch size based on current translated count
+      const batchSize = translatedCount <= 10 ? 5 : 3;
+
       // Get articles that need translation
       const articles = await prisma.article.findMany({
         where: {
@@ -107,7 +145,7 @@ export class TranslationService {
             not: "",
           },
         },
-        take: 3, // Process 3 articles at a time for free tier
+        take: batchSize,
         orderBy: {
           createdAt: "desc",
         },
@@ -122,6 +160,7 @@ export class TranslationService {
 
       return {
         success: true,
+        articlesProcessed: articles.length,
         message: `Processed ${articles.length} articles for translation`,
       };
     } catch (error) {

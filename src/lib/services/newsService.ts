@@ -26,10 +26,24 @@ export class NewsService {
 
   static async fetchLatestTechNews() {
     try {
+      // First, check how many articles we currently have with Hebrew translations
+      const currentArticleCount = await prisma.article.count({
+        where: {
+          translations: {
+            some: {
+              language: "he",
+            },
+          },
+        },
+      });
+
+      // Calculate how many articles we need to fetch (minimum 15 to ensure we get enough after filtering)
+      const fetchCount = Math.max(15, currentArticleCount <= 10 ? 25 : 15);
+
       const response = await axios.get<NewsAPIResponse>(
         `https://newsapi.org/v2/everything?domains=${this.NEWS_SOURCES.join(
           ","
-        )}&language=en&sortBy=publishedAt&pageSize=10`,
+        )}&language=en&sortBy=publishedAt&pageSize=${fetchCount}`,
         {
           headers: {
             "X-Api-Key": process.env.NEWS_API_KEY || "",
@@ -48,6 +62,36 @@ export class NewsService {
     try {
       const articles = await this.fetchLatestTechNews();
 
+      // Get current main page articles (10 most recent)
+      const currentMainArticles = await prisma.article.findMany({
+        where: {
+          translations: {
+            some: {
+              language: "he",
+            },
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: 10,
+      });
+
+      // Archive old main page articles by updating their status
+      if (currentMainArticles.length > 0) {
+        await prisma.article.updateMany({
+          where: {
+            id: {
+              in: currentMainArticles.map((article) => article.id),
+            },
+          },
+          data: {
+            isArchived: true,
+          },
+        });
+      }
+
+      // Store new articles
       for (const article of articles) {
         // Create URL-friendly slug from title
         const slug = article.title
@@ -72,6 +116,7 @@ export class NewsService {
               sourceUrl: article.url,
               sourceProvider: article.source.name,
               published: true,
+              isArchived: false, // New articles start as non-archived
               createdAt: new Date(article.publishedAt),
               updatedAt: new Date(article.publishedAt),
             },
