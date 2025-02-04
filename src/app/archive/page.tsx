@@ -7,10 +7,9 @@ async function getAllArticles() {
       translations: {
         some: {
           language: "he",
-          title: { not: "" },
-          summary: { not: "" },
         },
       },
+      isArchived: true,
     },
     orderBy: {
       createdAt: "desc",

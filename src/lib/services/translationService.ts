@@ -132,18 +132,23 @@ export class TranslationService {
       // Determine batch size based on current translated count
       const batchSize = translatedCount <= 10 ? 5 : 3;
 
-      // Get articles that need translation
+      // Get articles that need translation (those without Hebrew translations)
       const articles = await prisma.article.findMany({
         where: {
-          translations: {
-            none: {
-              language: "he",
+          AND: [
+            // Articles without Hebrew translations
+            {
+              translations: {
+                none: {
+                  language: "he",
+                },
+              },
             },
-          },
-          // Only get articles that still have English content
-          content: {
-            not: "",
-          },
+            // Articles that haven't been translated yet (still have English content)
+            {
+              OR: [{ content: { not: "" } }, { summary: { not: "" } }],
+            },
+          ],
         },
         take: batchSize,
         orderBy: {

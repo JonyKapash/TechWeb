@@ -19,71 +19,19 @@ interface HomeProps {
 }
 
 async function getArticles(searchQuery?: string) {
-  const headersList = headers();
-  const host = headersList.get("host");
-  const protocol = process.env.NODE_ENV === "development" ? "http" : "https";
-  const baseUrl = `${protocol}://${host}`;
-
-  const baseQuery = {
-    translations: {
-      some: {
-        language: "he",
-        title: { not: "" },
-        summary: { not: "" },
-      },
-    },
-    isArchived: false, // Only show non-archived articles on main page
-  };
-
-  if (searchQuery) {
-    const searchConditions = {
-      OR: [
-        { title: { contains: searchQuery, mode: "insensitive" } },
-        { summary: { contains: searchQuery, mode: "insensitive" } },
-        { content: { contains: searchQuery, mode: "insensitive" } },
-      ],
-    };
-
-    baseQuery.translations.some = {
-      ...baseQuery.translations.some,
-      ...searchConditions,
-    };
-  }
-
-  // First, check total articles vs translated articles
-  const [totalArticles, translatedArticles] = await Promise.all([
-    prisma.article.count(),
-    prisma.article.count({
-      where: {
-        translations: {
-          some: {
-            language: "he",
-          },
+  // Get the 10 most recent non-archived articles
+  const existingArticles = await prisma.article.findMany({
+    where: {
+      translations: {
+        some: {
+          language: "he",
         },
-        isArchived: false, // Only count non-archived articles
       },
-    }),
-  ]);
-
-  // If we have untranslated articles and total translated is less than or equal to 10
-  if (
-    totalArticles > translatedArticles &&
-    translatedArticles <= 10 &&
-    !searchQuery
-  ) {
-    // Trigger translation process
-    await fetch(`${baseUrl}/api/translations/process`, {
-      method: "POST",
-      cache: "no-store",
-    }).catch(console.error);
-  }
-
-  const articles = await prisma.article.findMany({
-    where: baseQuery,
+      isArchived: false,
+    },
     orderBy: {
       createdAt: "desc",
     },
-    // Always take 10 for main page, regardless of search
     take: 10,
     include: {
       translations: {
@@ -95,15 +43,80 @@ async function getArticles(searchQuery?: string) {
     },
   });
 
-  // If we have less than or equal to 10 translated articles, trigger article sync
-  if (articles.length <= 10 && !searchQuery) {
-    await fetch(`${baseUrl}/api/articles/sync`, {
+  // Log the total count of articles
+  const totalCount = await prisma.article.count({
+    where: {
+      translations: {
+        some: {
+          language: "he",
+        },
+      },
+    },
+  });
+
+  const archivedCount = await prisma.article.count({
+    where: {
+      translations: {
+        some: {
+          language: "he",
+        },
+      },
+      isArchived: true,
+    },
+  });
+
+  const nonArchivedCount = await prisma.article.count({
+    where: {
+      translations: {
+        some: {
+          language: "he",
+        },
+      },
+      isArchived: false,
+    },
+  });
+
+  console.log({
+    totalArticles: totalCount,
+    archivedArticles: archivedCount,
+    nonArchivedArticles: nonArchivedCount,
+    returnedArticles: existingArticles.length,
+  });
+
+  // If we have articles, return them immediately
+  if (existingArticles.length > 0) {
+    // Only trigger sync if we have fewer than 10 articles
+    if (existingArticles.length < 10 && !searchQuery) {
+      const headersList = headers();
+      const host = headersList.get("host");
+      const protocol =
+        process.env.NODE_ENV === "development" ? "http" : "https";
+      const baseUrl = `${protocol}://${host}`;
+
+      // Fire and forget - don't await these
+      fetch(`${baseUrl}/api/articles/sync`, {
+        method: "POST",
+        cache: "no-store",
+      }).catch(console.error);
+    }
+    return existingArticles.slice(0, 10); // Ensure we never return more than 10
+  }
+
+  // If no articles exist, show empty state and trigger sync
+  if (!searchQuery) {
+    const headersList = headers();
+    const host = headersList.get("host");
+    const protocol = process.env.NODE_ENV === "development" ? "http" : "https";
+    const baseUrl = `${protocol}://${host}`;
+
+    // Trigger sync but don't wait for it
+    fetch(`${baseUrl}/api/articles/sync`, {
       method: "POST",
       cache: "no-store",
     }).catch(console.error);
   }
 
-  return articles;
+  return [];
 }
 
 export default async function Home({ searchParams }: HomeProps) {

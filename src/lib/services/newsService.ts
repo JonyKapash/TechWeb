@@ -2,27 +2,34 @@ import axios from "axios";
 import { prisma } from "@/lib/prisma";
 import { Article } from "@prisma/client";
 
-interface NewsAPIResponse {
-  articles: {
-    title: string;
-    description: string;
-    content: string;
-    url: string;
-    urlToImage: string;
-    publishedAt: string;
-    source: {
-      name: string;
-    };
-  }[];
+interface GuardianResponse {
+  response: {
+    status: string;
+    total: number;
+    results: {
+      id: string;
+      type: string;
+      sectionId: string;
+      sectionName: string;
+      webPublicationDate: string;
+      webTitle: string;
+      webUrl: string;
+      apiUrl: string;
+      fields: {
+        headline: string;
+        standfirst: string;
+        body: string;
+        wordcount: string;
+        thumbnail: string;
+        bodyText: string;
+      };
+    }[];
+  };
 }
 
 export class NewsService {
-  private static readonly NEWS_SOURCES = [
-    "techcrunch.com",
-    "theverge.com",
-    "wired.com",
-    "arstechnica.com",
-  ];
+  private static readonly GUARDIAN_API_BASE =
+    "https://content.guardianapis.com";
 
   static async fetchLatestTechNews() {
     try {
@@ -37,59 +44,105 @@ export class NewsService {
         },
       });
 
-      // Calculate how many articles we need to fetch (minimum 15 to ensure we get enough after filtering)
+      // Calculate how many articles we need to fetch
       const fetchCount = Math.max(15, currentArticleCount <= 10 ? 25 : 15);
 
-      const response = await axios.get<NewsAPIResponse>(
-        `https://newsapi.org/v2/everything?domains=${this.NEWS_SOURCES.join(
-          ","
-        )}&language=en&sortBy=publishedAt&pageSize=${fetchCount}`,
+      const response = await axios.get<GuardianResponse>(
+        `${this.GUARDIAN_API_BASE}/search`,
         {
-          headers: {
-            "X-Api-Key": process.env.NEWS_API_KEY || "",
+          params: {
+            "api-key": process.env.GUARDIAN_API_KEY,
+            section: "technology",
+            "show-fields": "all",
+            "page-size": fetchCount,
+            "order-by": "newest",
           },
         }
       );
 
-      return response.data.articles;
+      if (
+        !response.data.response.results ||
+        response.data.response.results.length === 0
+      ) {
+        console.warn("No articles found in the response");
+        return [];
+      }
+
+      return response.data.response.results.map((article) => {
+        // Extract a clean version of the body text
+        const cleanContent = article.fields.bodyText.replace(/\n/g, " ").trim();
+
+        // Generate summary from standfirst or first few sentences
+        const summary = article.fields.standfirst
+          ? this.cleanHtml(article.fields.standfirst)
+          : this.generateSummary(cleanContent);
+
+        return {
+          title: article.fields.headline || article.webTitle,
+          content: cleanContent,
+          description: summary,
+          url: article.webUrl,
+          urlToImage: article.fields.thumbnail,
+          publishedAt: article.webPublicationDate,
+          source: {
+            name: "The Guardian",
+          },
+        };
+      });
     } catch (error) {
       console.error("Error fetching news:", error);
       throw error;
     }
   }
 
+  private static cleanHtml(text: string): string {
+    return text.replace(/<[^>]*>/g, "").trim();
+  }
+
+  private static generateSummary(content: string) {
+    // Split into sentences and remove empty ones
+    const sentences =
+      content
+        .match(/[^.!?]+[.!?]+/g)
+        ?.filter((sentence) => sentence.trim().length > 0) || [];
+
+    // Take first 2-3 sentences based on length
+    let summary = "";
+    let sentenceCount = 0;
+
+    for (const sentence of sentences) {
+      if (summary.length + sentence.length > 200 || sentenceCount >= 3) break;
+      summary += (summary ? " " : "") + sentence.trim();
+      sentenceCount++;
+    }
+
+    return summary;
+  }
+
   static async processAndStoreArticles() {
     try {
       const articles = await this.fetchLatestTechNews();
 
-      // Get current main page articles (10 most recent)
-      const currentMainArticles = await prisma.article.findMany({
+      // Calculate the timestamp for 24 hours ago
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      // Archive articles older than 24 hours
+      await prisma.article.updateMany({
         where: {
           translations: {
             some: {
               language: "he",
             },
           },
+          isArchived: false,
+          createdAt: {
+            lt: twentyFourHoursAgo,
+          },
         },
-        orderBy: {
-          createdAt: "desc",
+        data: {
+          isArchived: true,
         },
-        take: 10,
       });
-
-      // Archive old main page articles by updating their status
-      if (currentMainArticles.length > 0) {
-        await prisma.article.updateMany({
-          where: {
-            id: {
-              in: currentMainArticles.map((article) => article.id),
-            },
-          },
-          data: {
-            isArchived: true,
-          },
-        });
-      }
 
       // Store new articles
       for (const article of articles) {
@@ -110,15 +163,58 @@ export class NewsService {
             data: {
               title: article.title,
               slug,
-              content: article.content || article.description,
+              content: article.content,
               summary: article.description,
               imageUrl: article.urlToImage,
               sourceUrl: article.url,
               sourceProvider: article.source.name,
               published: true,
-              isArchived: false, // New articles start as non-archived
+              isArchived: false,
               createdAt: new Date(article.publishedAt),
               updatedAt: new Date(article.publishedAt),
+            },
+          });
+        }
+      }
+
+      // After storing new articles, ensure we have at least 10 non-archived articles
+      const nonArchivedCount = await prisma.article.count({
+        where: {
+          translations: {
+            some: {
+              language: "he",
+            },
+          },
+          isArchived: false,
+        },
+      });
+
+      // If we have fewer than 10 non-archived articles, unarchive the most recent archived ones
+      if (nonArchivedCount < 10) {
+        const articlesToUnarchive = await prisma.article.findMany({
+          where: {
+            translations: {
+              some: {
+                language: "he",
+              },
+            },
+            isArchived: true,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+          take: 10 - nonArchivedCount,
+        });
+
+        if (articlesToUnarchive.length > 0) {
+          await prisma.article.updateMany({
+            where: {
+              id: {
+                in: articlesToUnarchive.map((article) => article.id),
+              },
+            },
+            data: {
+              isArchived: false,
             },
           });
         }
