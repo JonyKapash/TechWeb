@@ -132,6 +132,10 @@ export class TranslationService {
       // Determine batch size based on current translated count
       const batchSize = translatedCount <= 10 ? 5 : 3;
 
+      console.log(
+        `Processing batch of size ${batchSize}. Current translated count: ${translatedCount}`
+      );
+
       // Get articles that need translation (those without Hebrew translations)
       const articles = await prisma.article.findMany({
         where: {
@@ -156,17 +160,32 @@ export class TranslationService {
         },
       });
 
+      console.log(`Found ${articles.length} articles to translate`);
+
+      let successfulTranslations = 0;
+      let failedTranslations = 0;
+
       // Translate each article completely (summary + full content)
       for (const article of articles) {
-        await this.translateArticle(article);
-        // Add delay between translations for free tier
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        try {
+          await this.translateArticle(article);
+          successfulTranslations++;
+          // Add delay between translations for free tier
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        } catch (error) {
+          console.error(`Failed to translate article ${article.id}:`, error);
+          failedTranslations++;
+          // Continue with next article even if one fails
+          continue;
+        }
       }
 
       return {
         success: true,
         articlesProcessed: articles.length,
-        message: `Processed ${articles.length} articles for translation`,
+        successfulTranslations,
+        failedTranslations,
+        message: `Processed ${articles.length} articles (${successfulTranslations} successful, ${failedTranslations} failed)`,
       };
     } catch (error) {
       console.error("Error processing articles for translation:", error);

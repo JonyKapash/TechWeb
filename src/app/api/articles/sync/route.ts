@@ -3,16 +3,19 @@ import { NewsService } from "@/lib/services/newsService";
 import { TranslationService } from "@/lib/services/translationService";
 import { prisma } from "@/lib/prisma";
 
+export const maxDuration = 300; // Set maximum duration to 5 minutes
+
 export async function POST() {
   try {
     console.log("Starting article sync process...");
     console.log("GUARDIAN_API_KEY present:", !!process.env.GUARDIAN_API_KEY);
+    console.log("GOOGLE_AI_KEY present:", !!process.env.GOOGLE_AI_KEY);
 
     // 1. Fetch and store new articles
     const result = await NewsService.processAndStoreArticles();
     console.log("Sync completed:", result);
 
-    // 2. Process translations until we have at least 15 articles
+    // 2. Process translations until we have at least 15 articles or hit the time limit
     let translatedCount = await prisma.article.count({
       where: {
         translations: {
@@ -24,9 +27,12 @@ export async function POST() {
     });
 
     console.log("Current translated count:", translatedCount);
+    const startTime = Date.now();
+    const timeLimit = 4.5 * 60 * 1000; // 4.5 minutes in milliseconds
 
-    while (translatedCount < 15) {
-      await TranslationService.processNextBatchOfArticles();
+    while (translatedCount < 15 && Date.now() - startTime < timeLimit) {
+      const batchResult = await TranslationService.processNextBatchOfArticles();
+      console.log("Batch translation result:", batchResult);
 
       // Update count
       translatedCount = await prisma.article.count({
@@ -42,12 +48,18 @@ export async function POST() {
       console.log("Updated translated count:", translatedCount);
 
       // Add a small delay between batches
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (translatedCount < 15) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
     }
+
+    const timeElapsed = (Date.now() - startTime) / 1000;
+    console.log(`Sync process completed in ${timeElapsed} seconds`);
 
     return NextResponse.json({
       success: true,
       message: `Articles synced and translations processed successfully. Total translations: ${translatedCount}`,
+      timeElapsed,
     });
   } catch (error) {
     console.error("Error in sync route:", error);
