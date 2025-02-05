@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 export async function POST() {
   try {
     console.log("Starting article sync process...");
-    console.log("NEWS_API_KEY present:", !!process.env.NEWS_API_KEY);
+    console.log("GUARDIAN_API_KEY present:", !!process.env.GUARDIAN_API_KEY);
 
     // 1. Fetch and store new articles
     const result = await NewsService.processAndStoreArticles();
