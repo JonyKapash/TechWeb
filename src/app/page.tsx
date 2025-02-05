@@ -19,12 +19,19 @@ interface HomeProps {
 }
 
 async function getArticles(searchQuery?: string) {
-  // Get the 10 most recent non-archived articles
+  // Get articles with proper search filtering
   const existingArticles = await prisma.article.findMany({
     where: {
       translations: {
         some: {
           language: "he",
+          ...(searchQuery && {
+            OR: [
+              { title: { contains: searchQuery, mode: "insensitive" } },
+              { summary: { contains: searchQuery, mode: "insensitive" } },
+              { content: { contains: searchQuery, mode: "insensitive" } },
+            ],
+          }),
         },
       },
       isArchived: false,
@@ -49,6 +56,13 @@ async function getArticles(searchQuery?: string) {
       translations: {
         some: {
           language: "he",
+          ...(searchQuery && {
+            OR: [
+              { title: { contains: searchQuery, mode: "insensitive" } },
+              { summary: { contains: searchQuery, mode: "insensitive" } },
+              { content: { contains: searchQuery, mode: "insensitive" } },
+            ],
+          }),
         },
       },
     },
@@ -59,6 +73,13 @@ async function getArticles(searchQuery?: string) {
       translations: {
         some: {
           language: "he",
+          ...(searchQuery && {
+            OR: [
+              { title: { contains: searchQuery, mode: "insensitive" } },
+              { summary: { contains: searchQuery, mode: "insensitive" } },
+              { content: { contains: searchQuery, mode: "insensitive" } },
+            ],
+          }),
         },
       },
       isArchived: true,
@@ -70,6 +91,13 @@ async function getArticles(searchQuery?: string) {
       translations: {
         some: {
           language: "he",
+          ...(searchQuery && {
+            OR: [
+              { title: { contains: searchQuery, mode: "insensitive" } },
+              { summary: { contains: searchQuery, mode: "insensitive" } },
+              { content: { contains: searchQuery, mode: "insensitive" } },
+            ],
+          }),
         },
       },
       isArchived: false,
@@ -85,7 +113,7 @@ async function getArticles(searchQuery?: string) {
 
   // If we have articles, return them immediately
   if (existingArticles.length > 0) {
-    // Only trigger sync if we have fewer than 10 articles
+    // Only trigger sync if we have fewer than 10 articles and not searching
     if (existingArticles.length < 10 && !searchQuery) {
       const headersList = headers();
       const host = headersList.get("host");
@@ -99,10 +127,10 @@ async function getArticles(searchQuery?: string) {
         cache: "no-store",
       }).catch(console.error);
     }
-    return existingArticles.slice(0, 10); // Ensure we never return more than 10
+    return existingArticles;
   }
 
-  // If no articles exist, show empty state and trigger sync
+  // If no articles exist and not searching, trigger sync
   if (!searchQuery) {
     const headersList = headers();
     const host = headersList.get("host");
