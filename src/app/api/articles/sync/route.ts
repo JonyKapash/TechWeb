@@ -3,7 +3,7 @@ import { NewsService } from "@/lib/services/newsService";
 import { TranslationService } from "@/lib/services/translationService";
 import { prisma } from "@/lib/prisma";
 
-export const maxDuration = 300; // Set maximum duration to 5 minutes
+export const maxDuration = 60; // Set maximum duration to 60 seconds (Vercel hobby plan limit)
 
 export async function POST() {
   try {
@@ -28,7 +28,7 @@ export async function POST() {
 
     console.log("Current translated count:", translatedCount);
     const startTime = Date.now();
-    const timeLimit = 4.5 * 60 * 1000; // 4.5 minutes in milliseconds
+    const timeLimit = 50 * 1000; // 50 seconds to allow for overhead
 
     while (translatedCount < 15 && Date.now() - startTime < timeLimit) {
       const batchResult = await TranslationService.processNextBatchOfArticles();
@@ -48,7 +48,7 @@ export async function POST() {
       console.log("Updated translated count:", translatedCount);
 
       // Add a small delay between batches
-      if (translatedCount < 15) {
+      if (translatedCount < 15 && Date.now() - startTime < timeLimit - 2000) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
