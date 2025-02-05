@@ -6,67 +6,44 @@ import { TranslationService } from "../services/translationService";
 // Mock external services
 vi.mock("@/lib/services/newsService", () => ({
   NewsService: {
-    fetchLatestTechNews: vi.fn().mockResolvedValue(
-      Array.from({ length: 12 }, (_, i) => ({
-        title: `Test Article ${i}`,
-        content: `Test content ${i}`,
-        description: `Test description ${i}`,
-        url: `https://test.com/${i}`,
-        urlToImage: `https://test.com/${i}.jpg`,
-        publishedAt: new Date().toISOString(),
-        source: { name: "Test Source" },
-      }))
-    ),
     processAndStoreArticles: vi.fn().mockImplementation(async () => {
-      // Get current main page articles
-      const currentMainArticles = await prisma.article.findMany({
-        where: {
-          isArchived: false,
-        },
-        orderBy: {
-          createdAt: "desc",
-        },
-      });
-
-      // Archive old articles
-      if (currentMainArticles.length > 0) {
-        await prisma.article.updateMany({
-          where: {
-            id: {
-              in: currentMainArticles.map((article) => article.id),
-            },
-          },
-          data: {
-            isArchived: true,
-          },
-        });
-      }
-
-      // Fetch and store new articles
-      const articles = await NewsService.fetchLatestTechNews();
-      for (const article of articles) {
-        const slug = article.title
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/^-+|-+$/g, "");
-
+      // Create 12 mock articles
+      for (let i = 0; i < 12; i++) {
         await prisma.article.create({
           data: {
-            title: article.title,
-            slug,
-            content: article.content,
-            summary: article.description,
-            imageUrl: article.urlToImage,
-            sourceUrl: article.url,
-            sourceProvider: article.source.name,
+            title: `Test Article ${i}`,
+            slug: `test-article-${i}`,
+            content: `Test content ${i}`,
+            summary: `Test summary ${i}`,
+            sourceUrl: `https://test.com/${i}`,
+            sourceProvider: "Test Source",
             published: true,
             isArchived: false,
-            createdAt: new Date(article.publishedAt),
-            updatedAt: new Date(article.publishedAt),
+            createdAt: new Date(),
+            updatedAt: new Date(),
           },
         });
       }
+
       return { success: true, message: "Articles processed successfully" };
+    }),
+    archiveOldArticles: vi.fn().mockImplementation(async () => {
+      const allArticles = await prisma.article.findMany({
+        where: { isArchived: false },
+        orderBy: { createdAt: "desc" },
+      });
+
+      // Keep the 10 most recent articles, archive the rest
+      const articlesToArchive = allArticles.slice(10);
+
+      for (const article of articlesToArchive) {
+        await prisma.article.update({
+          where: { id: article.id },
+          data: { isArchived: true },
+        });
+      }
+
+      return { success: true, message: "Articles archived successfully" };
     }),
   },
 }));
@@ -93,15 +70,25 @@ vi.mock("@/lib/services/translationService", () => ({
 
       for (const article of untranslatedArticles) {
         const translation = await TranslationService.translateArticle(article);
-        await prisma.translation.create({
-          data: {
+        // Check if translation exists before creating
+        const existingTranslation = await prisma.translation.findFirst({
+          where: {
             articleId: article.id,
             language: "he",
-            title: translation.title,
-            summary: translation.summary,
-            content: translation.content,
           },
         });
+
+        if (!existingTranslation) {
+          await prisma.translation.create({
+            data: {
+              articleId: article.id,
+              language: "he",
+              title: translation.title,
+              summary: translation.summary,
+              content: translation.content,
+            },
+          });
+        }
       }
 
       return {
@@ -175,8 +162,23 @@ describe("Article Sync Process", () => {
   });
 
   it("should archive old articles when new ones are added", async () => {
-    // First batch of articles
-    await NewsService.processAndStoreArticles();
+    // First batch of articles with unique slugs
+    for (let i = 0; i < 12; i++) {
+      await prisma.article.create({
+        data: {
+          title: `Initial Article ${i}`,
+          slug: `initial-article-${i}`,
+          content: `Initial content ${i}`,
+          summary: `Initial summary ${i}`,
+          sourceUrl: `https://test.com/initial/${i}`,
+          sourceProvider: "Test Source",
+          published: true,
+          isArchived: false,
+          createdAt: new Date(Date.now() - i * 1000),
+          updatedAt: new Date(),
+        },
+      });
+    }
 
     // Get current main page articles
     const initialArticles = await prisma.article.findMany({
@@ -184,8 +186,26 @@ describe("Article Sync Process", () => {
       orderBy: { createdAt: "desc" },
     });
 
-    // Fetch new articles (which should archive the old ones)
-    await NewsService.processAndStoreArticles();
+    // Create new batch with different slugs
+    for (let i = 0; i < 12; i++) {
+      await prisma.article.create({
+        data: {
+          title: `New Article ${i}`,
+          slug: `new-article-${i}`,
+          content: `New content ${i}`,
+          summary: `New summary ${i}`,
+          sourceUrl: `https://test.com/new/${i}`,
+          sourceProvider: "Test Source",
+          published: true,
+          isArchived: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+    }
+
+    // Trigger archiving logic
+    await NewsService.archiveOldArticles();
 
     // Check that old articles are archived
     const archivedArticles = await prisma.article.findMany({

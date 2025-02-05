@@ -55,7 +55,7 @@ export async function POST() {
       {
         success: false,
         message: "Error processing articles",
-        error: error.message,
+        error: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 500 }
     );
