@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { prisma } from "../prisma";
-import { NewsService } from "../services/newsService";
-import { TranslationService } from "../services/translationService";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { prisma } from "../src/lib/prisma";
+import { NewsService } from "../src/lib/services/newsService";
+import { TranslationService } from "../src/lib/services/translationService";
 
 // Mock external services
 vi.mock("@/lib/services/newsService", () => ({

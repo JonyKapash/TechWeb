@@ -1,5 +1,5 @@
-import { vi, afterEach } from "vitest";
 import { config } from "dotenv";
+import { afterEach, vi } from "vitest";
 
 // Load environment variables from .env file
 config();
