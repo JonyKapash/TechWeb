@@ -5,7 +5,7 @@ import { Article } from "@prisma/client";
 export class TranslationService {
   private static readonly BATCH_SIZE = 5;
   private static readonly MAX_RETRIES = 3;
-  private static readonly DELAY_BETWEEN_BATCHES = 2000; // 2 seconds
+  private static readonly DELAY_BETWEEN_BATCHES = 200; // 0.2 seconds
 
   static async translateArticle(article: Article) {
     try {
@@ -133,7 +133,7 @@ export class TranslationService {
       .trim();
   }
 
-  static async processNextBatchOfArticles() {
+  static async processNextBatchOfArticles(batchSizeOverride?: number) {
     try {
       // Get current count of translated articles
       const translatedCount = await prisma.article.count({
@@ -146,9 +146,11 @@ export class TranslationService {
         },
       });
 
-      // Determine batch size based on current translated count
+      // Use override if provided, otherwise use default logic
       const batchSize =
-        translatedCount <= 10
+        typeof batchSizeOverride === "number"
+          ? batchSizeOverride
+          : translatedCount <= 10
           ? this.BATCH_SIZE
           : Math.max(2, this.BATCH_SIZE - 2);
 
@@ -183,16 +185,18 @@ export class TranslationService {
       let successfulTranslations = 0;
       let failedTranslations = 0;
 
-      // Process each article
+      // Process each article sequentially for safety
       for (const article of articles) {
         try {
           await this.translateArticle(article);
           successfulTranslations++;
 
           // Add delay between translations to respect API rate limits
-          await new Promise((resolve) =>
-            setTimeout(resolve, this.DELAY_BETWEEN_BATCHES)
-          );
+          if (this.DELAY_BETWEEN_BATCHES > 0) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, this.DELAY_BETWEEN_BATCHES)
+            );
+          }
         } catch (error) {
           console.error(`Failed to translate article ${article.id}:`, error);
           failedTranslations++;
