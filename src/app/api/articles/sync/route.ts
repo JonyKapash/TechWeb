@@ -1,21 +1,29 @@
-import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 import { NewsService } from "@/lib/services/newsService";
 import { TranslationService } from "@/lib/services/translationService";
-import { prisma } from "@/lib/prisma";
+import { NextResponse } from "next/server";
 
-export const maxDuration = 60; // Set maximum duration to 60 seconds (Vercel hobby plan limit)
+export const maxDuration = 60; // Maximum execution time in seconds
 
 export async function POST() {
   try {
     console.log("Starting article sync process...");
-    console.log("GUARDIAN_API_KEY present:", !!process.env.GUARDIAN_API_KEY);
-    console.log("GOOGLE_AI_KEY present:", !!process.env.GOOGLE_AI_KEY);
 
-    // 1. Fetch and store new articles
-    const result = await NewsService.processAndStoreArticles();
-    console.log("Sync completed:", result);
+    // Validate environment variables
+    if (!process.env.GUARDIAN_API_KEY) {
+      throw new Error("GUARDIAN_API_KEY is not configured");
+    }
+    if (!process.env.GOOGLE_AI_KEY) {
+      throw new Error("GOOGLE_AI_KEY is not configured");
+    }
 
-    // 2. Process translations until we have at least 15 articles or hit the time limit
+    // Step 1: Fetch and store new articles
+    console.log("Fetching and storing new articles...");
+    const fetchResult = await NewsService.processAndStoreArticles();
+    console.log("Articles fetched:", fetchResult);
+
+    // Step 2: Process translations
+    console.log("Processing translations...");
     let translatedCount = await prisma.article.count({
       where: {
         translations: {
@@ -29,9 +37,18 @@ export async function POST() {
     console.log("Current translated count:", translatedCount);
     const startTime = Date.now();
     const timeLimit = 50 * 1000; // 50 seconds to allow for overhead
+    const translationResults = [];
+    let hasMoreToTranslate = true;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 5;
 
-    while (translatedCount < 15 && Date.now() - startTime < timeLimit) {
+    while (
+      hasMoreToTranslate &&
+      attempts < MAX_ATTEMPTS &&
+      Date.now() - startTime < timeLimit
+    ) {
       const batchResult = await TranslationService.processNextBatchOfArticles();
+      translationResults.push(batchResult);
       console.log("Batch translation result:", batchResult);
 
       // Update count
@@ -47,8 +64,15 @@ export async function POST() {
 
       console.log("Updated translated count:", translatedCount);
 
-      // Add a small delay between batches
-      if (translatedCount < 15 && Date.now() - startTime < timeLimit - 2000) {
+      // Check if we need to continue
+      if (batchResult.articlesProcessed === 0) {
+        hasMoreToTranslate = false;
+      }
+
+      attempts++;
+
+      // Add delay between batches if we're continuing
+      if (hasMoreToTranslate && Date.now() - startTime < timeLimit - 2000) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
@@ -60,9 +84,11 @@ export async function POST() {
       success: true,
       message: `Articles synced and translations processed successfully. Total translations: ${translatedCount}`,
       timeElapsed,
+      fetchResult,
+      translationResults,
     });
   } catch (error) {
-    console.error("Error in sync route:", error);
+    console.error("Error in sync process:", error);
     return NextResponse.json(
       {
         success: false,

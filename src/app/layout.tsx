@@ -1,9 +1,10 @@
-import type { Metadata } from "next";
-import { Inter } from "next/font/google";
-import "./globals.css";
-import { Analytics } from "@vercel/analytics/react";
 import Header from "@/components/layout/Header";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { Analytics } from "@vercel/analytics/react";
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import { Toaster } from "react-hot-toast";
+import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -40,6 +41,7 @@ export default function RootLayout({
             </footer>
           </div>
         </ThemeProvider>
+        <Toaster position="top-center" />
         <Analytics />
       </body>
     </html>

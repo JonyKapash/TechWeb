@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useTheme } from "@/context/ThemeContext";
+import { MagnifyingGlassIcon } from "@heroicons/react/24/outline";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { MagnifyingGlassIcon } from "@heroicons/react/24/outline";
-import { useTheme } from "@/context/ThemeContext";
+import { useEffect, useState } from "react";
+import { toast } from "react-hot-toast";
 
 export default function Header() {
   const { theme, toggleTheme } = useTheme();
@@ -12,6 +13,8 @@ export default function Header() {
   const [searchQuery, setSearchQuery] = useState("");
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [canRefresh, setCanRefresh] = useState(true);
 
   // Initialize search query from URL
   useEffect(() => {
@@ -21,6 +24,19 @@ export default function Header() {
       setIsSearchOpen(true);
     }
   }, [searchParams]);
+
+  // Check if refresh is allowed (once per day)
+  useEffect(() => {
+    const lastRefresh = localStorage.getItem("lastArticleRefresh");
+    if (lastRefresh) {
+      const last = new Date(lastRefresh);
+      const now = new Date();
+      const diff = now.getTime() - last.getTime();
+      if (diff < 24 * 60 * 60 * 1000) {
+        setCanRefresh(false);
+      }
+    }
+  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,6 +53,22 @@ export default function Header() {
     setIsSearchOpen(false);
   };
 
+  const handleRefreshArticles = async () => {
+    setIsRefreshing(true);
+    try {
+      const res = await fetch("/api/articles/sync", { method: "POST" });
+      if (!res.ok) throw new Error("Failed to refresh articles");
+      localStorage.setItem("lastArticleRefresh", new Date().toISOString());
+      setCanRefresh(false);
+      toast.success("Articles refreshed successfully!");
+      router.refresh();
+    } catch (err) {
+      toast.error("Failed to refresh articles");
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   return (
     <header className="sticky top-0 z-50 border-b border-gray-200 dark:border-white/10 bg-violet-50/90 dark:bg-violet-950/90 backdrop-blur supports-[backdrop-filter]:bg-violet-50/90 dark:supports-[backdrop-filter]:bg-violet-950/90">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8">
@@ -50,6 +82,41 @@ export default function Header() {
 
           {/* Right side controls */}
           <div className="flex items-center gap-4">
+            {/* Refresh Articles Button */}
+            <button
+              type="button"
+              className={`btn-primary flex items-center gap-2 ${
+                !canRefresh ? "opacity-50 cursor-not-allowed" : ""
+              }`}
+              onClick={handleRefreshArticles}
+              disabled={!canRefresh || isRefreshing}
+              title={
+                canRefresh ? "Refresh articles" : "You can refresh once per day"
+              }
+            >
+              {isRefreshing ? (
+                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                    fill="none"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4l5-5-5-5v4a10 10 0 100 20v-2a8 8 0 01-8-8z"
+                  />
+                </svg>
+              ) : (
+                <>
+                  <span>רענן מאמרים</span>
+                </>
+              )}
+            </button>
             {/* Search button */}
             <button
               type="button"

@@ -1,39 +1,37 @@
-import axios from "axios";
 import { prisma } from "@/lib/prisma";
-import { Article } from "@prisma/client";
+import axios from "axios";
+import { z } from "zod";
 
-interface GuardianResponse {
-  response: {
-    status: string;
-    total: number;
-    results: {
-      id: string;
-      type: string;
-      sectionId: string;
-      sectionName: string;
-      webPublicationDate: string;
-      webTitle: string;
-      webUrl: string;
-      apiUrl: string;
-      fields: {
-        headline: string;
-        standfirst: string;
-        body: string;
-        wordcount: string;
-        thumbnail: string;
-        bodyText: string;
-      };
-    }[];
-  };
-}
+// Validation schemas
+const GuardianArticleSchema = z.object({
+  webTitle: z.string(),
+  webUrl: z.string(),
+  webPublicationDate: z.string(),
+  fields: z.object({
+    headline: z.string().optional(),
+    bodyText: z.string(),
+    standfirst: z.string().optional(),
+    thumbnail: z.string().optional(),
+  }),
+});
+
+const GuardianResponseSchema = z.object({
+  response: z.object({
+    results: z.array(GuardianArticleSchema),
+    total: z.number(),
+  }),
+});
 
 export class NewsService {
   private static readonly GUARDIAN_API_BASE =
     "https://content.guardianapis.com";
+  private static readonly MIN_ARTICLES = 10;
+  private static readonly MAX_ARTICLES = 25;
+  private static readonly ARCHIVE_AGE_HOURS = 24;
 
   static async fetchLatestTechNews() {
     try {
-      // First, check how many articles we currently have with Hebrew translations
+      // Check current article count
       const currentArticleCount = await prisma.article.count({
         where: {
           translations: {
@@ -44,10 +42,15 @@ export class NewsService {
         },
       });
 
-      // Calculate how many articles we need to fetch
-      const fetchCount = Math.max(15, currentArticleCount <= 10 ? 25 : 15);
+      // Calculate fetch count based on current articles
+      const fetchCount = Math.max(
+        this.MIN_ARTICLES,
+        currentArticleCount <= this.MIN_ARTICLES
+          ? this.MAX_ARTICLES
+          : this.MIN_ARTICLES
+      );
 
-      const response = await axios.get<GuardianResponse>(
+      const response = await axios.get<z.infer<typeof GuardianResponseSchema>>(
         `${this.GUARDIAN_API_BASE}/search`,
         {
           params: {
@@ -60,73 +63,62 @@ export class NewsService {
         }
       );
 
-      if (
-        !response.data.response.results ||
-        response.data.response.results.length === 0
-      ) {
+      // Validate response
+      const validatedData = GuardianResponseSchema.parse(response.data);
+
+      if (!validatedData.response.results?.length) {
         console.warn("No articles found in the response");
         return [];
       }
 
-      return response.data.response.results.map((article) => {
-        // Extract a clean version of the body text
-        const cleanContent = article.fields.bodyText.replace(/\n/g, " ").trim();
-
-        // Generate summary from standfirst or first few sentences
-        const summary = article.fields.standfirst
-          ? this.cleanHtml(article.fields.standfirst)
-          : this.generateSummary(cleanContent);
-
-        return {
-          title: article.fields.headline || article.webTitle,
-          content: cleanContent,
-          description: summary,
-          url: article.webUrl,
-          urlToImage: article.fields.thumbnail,
-          publishedAt: article.webPublicationDate,
-          source: {
-            name: "The Guardian",
-          },
-        };
-      });
+      return validatedData.response.results.map((article) => ({
+        title: article.fields.headline || article.webTitle,
+        content: this.cleanContent(article.fields.bodyText),
+        description: this.generateSummary(
+          article.fields.standfirst,
+          article.fields.bodyText
+        ),
+        url: article.webUrl,
+        urlToImage: article.fields.thumbnail,
+        publishedAt: article.webPublicationDate,
+        source: {
+          name: "The Guardian",
+        },
+      }));
     } catch (error) {
       console.error("Error fetching news:", error);
       throw error;
     }
   }
 
-  private static cleanHtml(text: string): string {
-    return text.replace(/<[^>]*>/g, "").trim();
+  private static cleanContent(content: string): string {
+    return content.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
   }
 
-  private static generateSummary(content: string) {
-    // Split into sentences and remove empty ones
-    const sentences =
-      content
-        .match(/[^.!?]+[.!?]+/g)
-        ?.filter((sentence) => sentence.trim().length > 0) || [];
-
-    // Take first 2-3 sentences based on length
-    let summary = "";
-    let sentenceCount = 0;
-
-    for (const sentence of sentences) {
-      if (summary.length + sentence.length > 200 || sentenceCount >= 3) break;
-      summary += (summary ? " " : "") + sentence.trim();
-      sentenceCount++;
+  private static generateSummary(
+    standfirst?: string,
+    content?: string
+  ): string {
+    if (standfirst) {
+      return this.cleanContent(standfirst);
     }
-
-    return summary;
+    if (content) {
+      // Take first 150 characters of content
+      return this.cleanContent(content).slice(0, 150) + "...";
+    }
+    return "";
   }
 
   static async processAndStoreArticles() {
     try {
       const articles = await this.fetchLatestTechNews();
 
-      // Calculate the timestamp for 24 hours ago
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      // Calculate archive threshold
+      const archiveThreshold = new Date(
+        Date.now() - this.ARCHIVE_AGE_HOURS * 60 * 60 * 1000
+      );
 
-      // Archive articles older than 24 hours
+      // Archive old articles
       await prisma.article.updateMany({
         where: {
           translations: {
@@ -136,7 +128,7 @@ export class NewsService {
           },
           isArchived: false,
           createdAt: {
-            lt: twentyFourHoursAgo,
+            lt: archiveThreshold,
           },
         },
         data: {
@@ -146,19 +138,14 @@ export class NewsService {
 
       // Store new articles
       for (const article of articles) {
-        // Create URL-friendly slug from title
-        const slug = article.title
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/^-+|-+$/g, "");
+        const slug = this.generateSlug(article.title);
 
-        // Check if article already exists
+        // Check for existing article
         const existingArticle = await prisma.article.findUnique({
           where: { slug },
         });
 
         if (!existingArticle) {
-          // Store new article
           await prisma.article.create({
             data: {
               title: article.title,
@@ -177,53 +164,63 @@ export class NewsService {
         }
       }
 
-      // After storing new articles, ensure we have at least 10 non-archived articles
-      const nonArchivedCount = await prisma.article.count({
+      // Ensure minimum article count
+      await this.ensureMinimumArticleCount();
+
+      return { success: true, message: "Articles processed successfully" };
+    } catch (error) {
+      console.error("Error processing articles:", error);
+      throw error;
+    }
+  }
+
+  private static generateSlug(title: string): string {
+    return title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  private static async ensureMinimumArticleCount() {
+    const nonArchivedCount = await prisma.article.count({
+      where: {
+        translations: {
+          some: {
+            language: "he",
+          },
+        },
+        isArchived: false,
+      },
+    });
+
+    if (nonArchivedCount < this.MIN_ARTICLES) {
+      const articlesToUnarchive = await prisma.article.findMany({
         where: {
           translations: {
             some: {
               language: "he",
             },
           },
-          isArchived: false,
+          isArchived: true,
         },
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: this.MIN_ARTICLES - nonArchivedCount,
       });
 
-      // If we have fewer than 10 non-archived articles, unarchive the most recent archived ones
-      if (nonArchivedCount < 10) {
-        const articlesToUnarchive = await prisma.article.findMany({
+      if (articlesToUnarchive.length > 0) {
+        await prisma.article.updateMany({
           where: {
-            translations: {
-              some: {
-                language: "he",
-              },
+            id: {
+              in: articlesToUnarchive.map((article) => article.id),
             },
-            isArchived: true,
           },
-          orderBy: {
-            createdAt: "desc",
+          data: {
+            isArchived: false,
           },
-          take: 10 - nonArchivedCount,
         });
-
-        if (articlesToUnarchive.length > 0) {
-          await prisma.article.updateMany({
-            where: {
-              id: {
-                in: articlesToUnarchive.map((article) => article.id),
-              },
-            },
-            data: {
-              isArchived: false,
-            },
-          });
-        }
       }
-
-      return { success: true, message: "Articles processed successfully" };
-    } catch (error) {
-      console.error("Error processing articles:", error);
-      throw error;
     }
   }
 

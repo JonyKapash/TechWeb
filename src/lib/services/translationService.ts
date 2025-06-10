@@ -1,11 +1,27 @@
+import { generateStructuredContent } from "@/lib/gemini";
 import { prisma } from "@/lib/prisma";
 import { Article } from "@prisma/client";
-import { generateStructuredContent } from "@/lib/gemini";
 
 export class TranslationService {
+  private static readonly BATCH_SIZE = 5;
+  private static readonly MAX_RETRIES = 3;
+  private static readonly DELAY_BETWEEN_BATCHES = 2000; // 2 seconds
+
   static async translateArticle(article: Article) {
     try {
-      // Translate the entire article at once (title, summary, and content)
+      // Check for existing translation first
+      const existingTranslation = await prisma.translation.findFirst({
+        where: {
+          articleId: article.id,
+          language: "he",
+        },
+      });
+
+      if (existingTranslation) {
+        return { success: true, message: "Translation already exists" };
+      }
+
+      // Translate the entire article at once
       const translationPrompt = `
         You are a professional translator specializing in English to Hebrew translation.
         Please translate the following English article to Hebrew with high accuracy and natural flow.
@@ -38,8 +54,7 @@ export class TranslationService {
           const contentMatch = text.match(/CONTENT:\s*([\s\S]+)$/);
 
           if (!titleMatch?.[1] || !summaryMatch?.[1] || !contentMatch?.[1]) {
-            console.error("Failed to parse translation. Received text:", text);
-            throw new Error("Failed to parse translation");
+            throw new Error("Failed to parse translation response");
           }
 
           const translatedTitle = titleMatch[1].trim();
@@ -50,44 +65,29 @@ export class TranslationService {
             throw new Error("One or more translated fields are empty");
           }
 
-          // Remove any metadata or note messages
-          translatedContent = translatedContent
-            .replace(/Note:.*?\[.*?chars\].*$/s, "") // Remove English note
-            .replace(/הערה:.*?\[.*?תווים\].*$/s, "") // Remove Hebrew note
-            .replace(/\[[\+\-]?\d+\s*(chars|תווים)\]/g, "") // Remove character count indicators
-            .trim();
-
-          // Ensure proper paragraph formatting
-          const formattedContent = translatedContent
-            .split(/\n+/)
-            .filter((para) => para.trim())
-            .join("\n\n");
-
-          // Validate no metadata messages remain
-          if (
-            formattedContent.includes("[+") ||
-            formattedContent.includes("Note:") ||
-            formattedContent.includes("הערה:") ||
-            formattedContent.includes("chars]") ||
-            formattedContent.includes("תווים]")
-          ) {
-            throw new Error("Translation contains metadata messages");
-          }
+          // Clean up the content
+          translatedContent = this.cleanTranslationContent(translatedContent);
 
           return {
             title: translatedTitle,
             summary: translatedSummary,
-            content: formattedContent,
+            content: translatedContent,
           };
         },
-        5
-      ); // Increased max retries to 5 for metadata issues
+        this.MAX_RETRIES
+      );
 
-      // Store the complete translation and clear English content in a single transaction
-      await prisma.$transaction([
-        // Create Hebrew translation with all content
-        prisma.translation.create({
-          data: {
+      // Use a transaction to ensure data consistency
+      await prisma.$transaction(async (tx) => {
+        // Create or update translation
+        await tx.translation.upsert({
+          where: {
+            articleId_language: {
+              articleId: article.id,
+              language: "he",
+            },
+          },
+          create: {
             language: "he",
             title: translation.title,
             content: translation.content,
@@ -98,16 +98,22 @@ export class TranslationService {
               },
             },
           },
-        }),
+          update: {
+            title: translation.title,
+            content: translation.content,
+            summary: translation.summary,
+          },
+        });
+
         // Clear English content
-        prisma.article.update({
+        await tx.article.update({
           where: { id: article.id },
           data: {
-            content: "", // Clear English content
-            summary: "", // Clear English summary
+            content: "",
+            summary: "",
           },
-        }),
-      ]);
+        });
+      });
 
       return { success: true, message: "Article translation completed" };
     } catch (error) {
@@ -116,9 +122,20 @@ export class TranslationService {
     }
   }
 
+  private static cleanTranslationContent(content: string): string {
+    return content
+      .replace(/Note:.*?\[.*?chars\].*$/s, "") // Remove English note
+      .replace(/הערה:.*?\[.*?תווים\].*$/s, "") // Remove Hebrew note
+      .replace(/\[[\+\-]?\d+\s*(chars|תווים)\]/g, "") // Remove character count indicators
+      .split(/\n+/)
+      .filter((para) => para.trim())
+      .join("\n\n")
+      .trim();
+  }
+
   static async processNextBatchOfArticles() {
     try {
-      // Check current count of articles with Hebrew translations
+      // Get current count of translated articles
       const translatedCount = await prisma.article.count({
         where: {
           translations: {
@@ -130,17 +147,19 @@ export class TranslationService {
       });
 
       // Determine batch size based on current translated count
-      const batchSize = translatedCount <= 10 ? 5 : 3;
+      const batchSize =
+        translatedCount <= 10
+          ? this.BATCH_SIZE
+          : Math.max(2, this.BATCH_SIZE - 2);
 
       console.log(
         `Processing batch of size ${batchSize}. Current translated count: ${translatedCount}`
       );
 
-      // Get articles that need translation (those without Hebrew translations)
+      // Get articles that need translation
       const articles = await prisma.article.findMany({
         where: {
           AND: [
-            // Articles without Hebrew translations
             {
               translations: {
                 none: {
@@ -148,7 +167,6 @@ export class TranslationService {
                 },
               },
             },
-            // Articles that haven't been translated yet (still have English content)
             {
               OR: [{ content: { not: "" } }, { summary: { not: "" } }],
             },
@@ -165,17 +183,19 @@ export class TranslationService {
       let successfulTranslations = 0;
       let failedTranslations = 0;
 
-      // Translate each article completely (summary + full content)
+      // Process each article
       for (const article of articles) {
         try {
           await this.translateArticle(article);
           successfulTranslations++;
-          // Add delay between translations for free tier
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+
+          // Add delay between translations to respect API rate limits
+          await new Promise((resolve) =>
+            setTimeout(resolve, this.DELAY_BETWEEN_BATCHES)
+          );
         } catch (error) {
           console.error(`Failed to translate article ${article.id}:`, error);
           failedTranslations++;
-          // Continue with next article even if one fails
           continue;
         }
       }
